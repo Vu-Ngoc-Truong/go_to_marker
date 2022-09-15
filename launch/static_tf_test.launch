@@ -1,0 +1,12 @@
+<launch>
+    <!-- base tf -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="static_transform_publisher_1" args="1 1 0 0 0 0  map                odom" />
+    <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="static_transform_publisher_2" args="1 0 0 0 0 0  odom               base_footprint" /> -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="static_transform_publisher_3" args="0 0 0.2 0 0 0  base_footprint   base_link" />
+    <node pkg="tf2_ros" type="static_transform_publisher" name="static_transform_publisher_4" args="0.2 0 0.1 0 0 0  base_link      laser_link" />
+    <node pkg="tf2_ros" type="static_transform_publisher" name="static_transform_publisher_5" args="0.3 0 0.5 -1.57 0 -1.57  base_link      camera_link" />
+
+    <!-- other tf  -->
+    <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="static_transform_publisher_6" args="3 1 0.5 -1.57 0 1.57  map aruco_test_1" /> -->
+
+</launch>

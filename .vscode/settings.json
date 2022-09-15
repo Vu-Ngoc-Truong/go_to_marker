@@ -1,0 +1,21 @@
+{
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}/../../../.local/lib/python3.8/site-packages",
+        "${workspaceFolder}/../../devel/lib/python3.8/dist-packages",
+        "/opt/ros/melodic/lib/python3.8/dist-packages",
+        // "/usr/bin/python3",
+        "${workspaceFolder}/../agv_common_library/scripts",
+        "${workspaceFolder}/../path_creator/scripts",
+        "${workspaceFolder}/../agv_mongodb/scripts"
+    ],
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/../../../.local/lib/python2.7/site-packages",
+        "${workspaceFolder}/../../devel/lib/python2.7/dist-packages",
+        "/opt/ros/melodic/lib/python2.7/dist-packages",
+        // "/usr/bin/python3",
+        "${workspaceFolder}/../agv_common_library/scripts",
+        "${workspaceFolder}/../path_creator/scripts",
+        "${workspaceFolder}/../agv_mongodb/scripts"
+    ],
+    "cmake.configureOnOpen": false
+}
