@@ -16,7 +16,8 @@ from geometry_msgs.msg import Twist, Pose, PoseStamped, PoseWithCovarianceStampe
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Int16, Header
 from math import pi, sqrt
-from tf.transformations import quaternion_from_euler, euler_from_quaternion
+import numpy as np
+from tf.transformations import *
 from actionlib_msgs.msg import GoalStatus, GoalID, GoalStatusArray
 from std_stamped_msgs.msg import StringStamped, StringAction, StringFeedback, StringResult, StringGoal, EmptyStamped
 from std_stamped_msgs.srv import StringService, StringServiceResponse
@@ -49,6 +50,8 @@ class GoToMarker(object):
     _feedback = StringFeedback()
     _result = StringResult()
     def __init__(self, *args, **kwargs):
+        self.node_init_done = False
+        self.config_path = kwargs["config_path"]
         # Action led control
         self._action_name = "go_to_marker_server"
         self._as = actionlib.SimpleActionServer(self._action_name, StringAction, execute_cb=self.execute_cb, auto_start=False)
@@ -68,11 +71,14 @@ class GoToMarker(object):
         # Subscriber
         # rospy.Subscriber("/led_status", StringStamped, self.led_status_cb)
 
-        # self.load_config(kwargs["config_file"])
+        # Service
+        self.aruco_detect_en = rospy.ServiceProxy('/enable_detections', SetBool)
+
         rospy.on_shutdown(self.shutdown)
 
         # Initial
         self.init_variable(*args, **kwargs)
+        self.loop()
 
 
     """
@@ -86,21 +92,41 @@ class GoToMarker(object):
     """
 
     def init_variable(self, *args, **kwargs):
+        """
+        Init variable
+        """
         self.simulation = kwargs["simulation"]
         rospy.logdebug("simulation: {}".format(self.simulation))
         self.simulation_str = "true" if self.simulation else "false"
-        # TF
-        self.led_effect_file = kwargs["config_file"]
 
         # General variable
         self.marker_id = 100
         self.x_offset = 1
         self.y_offset = 0.5
-        self.yaw_offset = 0.785
+        self.yaw_offset = 0
+        self.base_frame = "odom"
+
+        self.marker_cnt_target = 5
+        self.marker_success_target = 3
+        self.max_marker_check = 20
 
         self.tfBuffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
         self.broadcaster = tf2_ros.StaticTransformBroadcaster()
+
+        self.get_marker_pose_result = False
+        self.marker_pose        = PoseStamped()
+        self.marker_goal_pose   = PoseStamped()
+        self.marker_pose.header.frame_id        = self.base_frame
+        self.marker_goal_pose.header.frame_id   = self.base_frame
+
+
+        # Disable Aruco detect
+        set_result = self.aruco_detect_en(False)
+        rospy.loginfo("Aruco detect disable result: {}".format(str(set_result.success)))
+        self.aruco_enable = False
+        self.node_init_done = True
+        rospy.loginfo("Init variable done")
 
 
     def shutdown(self):
@@ -116,26 +142,58 @@ class GoToMarker(object):
     ##       ##     ## ##   ### ##    ##    ##     ##  ##     ## ##   ###
     ##        #######  ##    ##  ######     ##    ####  #######  ##    ##
     """
-    def pub_tf_goal(self, base_frame):
-        trans_msg =  TransformStamped()
-        trans_msg.header.stamp = rospy.Time.now()
-        trans_msg.header.frame_id = base_frame
-        trans_msg.child_frame_id = "goal_marker_" + str(self.marker_id)
+    def get_goal_from_marker(self, marker_pose):
+        """Creat goal pose from marker pose
 
-        trans_msg.transform.translation.x = self.y_offset
-        trans_msg.transform.translation.y = 0
-        trans_msg.transform.translation.z = self.x_offset
+        Args:
+            marker_pose (pose): Pose of marker
+        """
+        if self.CODE_ONLY:
+            marker_pose = Pose()
+        goal_pose = Pose()
 
-        q = quaternion_from_euler(-1.57, self.yaw_offset-1.57, 0)
-        trans_msg.transform.rotation.x = q[0]
-        trans_msg.transform.rotation.y = q[1]
-        trans_msg.transform.rotation.z = q[2]
-        trans_msg.transform.rotation.w = q[3]
-        self.broadcaster.sendTransform(trans_msg)
-        rospy.loginfo("broadcaster goal pose done")
+        # Get matrix of marker to odom
+        _transMarker2Odom = np.array(
+            [marker_pose.position.x, marker_pose.position.y, marker_pose.position.z])
+        _rotMarker2Odom = np.array([marker_pose.orientation.x, marker_pose.orientation.y,
+                                    marker_pose.orientation.z, marker_pose.orientation.w])
+        _matrixMarker2Odom = concatenate_matrices(translation_matrix(
+            _transMarker2Odom), quaternion_matrix(_rotMarker2Odom))
+        print( "Matrix Marker to Odom:")
+        print(_matrixMarker2Odom)
+        # Get matrix of goal to marker
+        _transGoal2Marker = np.array([self.y_offset, 0, self.x_offset])
+        q_transform = quaternion_from_euler(-1.57, self.yaw_offset-1.57, 0)
+        print("q_transform")
+        print(q_transform)
+        _rotGoal2Marker = np.array([q_transform[0], q_transform[1],
+                                    q_transform[2], q_transform[3]])
+        _matrixGoal2Marker = concatenate_matrices(translation_matrix(
+            _transGoal2Marker), quaternion_matrix(_rotGoal2Marker))
+        print( "translation_matrix:")
+        print(translation_matrix(_transGoal2Marker))
+        print( "quaternion_matrix")
+        print(quaternion_matrix(_rotGoal2Marker))
+        print( "Matrix Goal to Marker:")
+        print(_matrixGoal2Marker)
+        # Get matrix of goal to odom
+        _matrixGoal2Odom = np.matmul(_matrixMarker2Odom, _matrixGoal2Marker)
+        print("matrix goal to odom \n",_matrixGoal2Odom)
+        # Get pose from matrix
+        goal_pose.position.x   = translation_from_matrix(_matrixGoal2Odom)[0]
+        goal_pose.position.y   = translation_from_matrix(_matrixGoal2Odom)[1]
+        goal_pose.position.z   = translation_from_matrix(_matrixGoal2Odom)[2]
+        goal_pose.orientation.x = quaternion_from_matrix(_matrixGoal2Odom)[0]
+        goal_pose.orientation.y = quaternion_from_matrix(_matrixGoal2Odom)[1]
+        goal_pose.orientation.z = quaternion_from_matrix(_matrixGoal2Odom)[2]
+        goal_pose.orientation.w = quaternion_from_matrix(_matrixGoal2Odom)[3]
+        print("goal pose \n",goal_pose)
 
-    def pose_filter(self, pose_fiterred, new_pose, cnt, angle_robot_vs_detected, detected_angle_allow, detected_distance_allow, dis_threshold=0.1, ang_threshold=0.1):
-        """[summary]
+        return goal_pose
+
+    def pose_filter(self, pose_fiterred, new_pose, cnt, detected_distance_allow, dis_threshold=0.1, ang_threshold=0.1):
+        """
+        Filter pose to avoid noise and bias
 
         Args:
             pose_fiterred (PoseStamped): pose fiterred
@@ -162,13 +220,13 @@ class GoToMarker(object):
 
         dyaw = abs(new_yaw - yaw)
 
-        angle_allow_check = abs(delta_angle(new_yaw, angle_robot_vs_detected))
+        # angle_allow_check = abs(delta_angle(new_yaw, angle_robot_vs_detected))
         distance_allow_check = sqrt(new_pose.pose.position.x**2 + new_pose.pose.position.y**2)
 
-        rospy.loginfo("Current angle robot vs detected pose: {}, angle_allow_check: {}, distance_allow_check: {}"
-                        .format(round(new_yaw, 2),round(angle_allow_check, 2), round(distance_allow_check, 2)))
+        # rospy.loginfo("Current angle robot vs detected pose: {}, angle_allow_check: {}, distance_allow_check: {}"
+        #                 .format(round(new_yaw, 2),round(angle_allow_check, 2), round(distance_allow_check, 2)))
 
-        if (dx < dis_threshold and dy < dis_threshold and dyaw < ang_threshold and angle_allow_check < detected_angle_allow or cnt == 0)\
+        if (dx < dis_threshold and dy < dis_threshold and dyaw < ang_threshold or cnt == 0)\
                     and distance_allow_check < detected_distance_allow:
             pose_fiterred.header = new_pose.header
             pose_fiterred.pose.position.x = (pose_fiterred.pose.position.x * cnt + new_pose.pose.position.x)/(cnt + 1)
@@ -185,6 +243,42 @@ class GoToMarker(object):
             pose_fiterred.header.stamp = rospy.Time.now()
             return pose_fiterred, cnt
 
+    def get_marker_pose(self, marker_id):
+        """
+        Get pose of marker
+        Args:
+            marker_id : (int) ID of aruco marker
+
+        Returns:
+            marker_pose: pose
+            result : (Bool) True if get pose
+        """
+        result = False
+        marker_pose = PoseStamped()
+        marker_trans = TransformStamped()
+
+        try:
+            # Broadcaster goal pose
+
+            if not self.tfBuffer.can_transform('odom', 'fiducial_'+ str(self.marker_id), rospy.Time(), rospy.Duration(4.0)):
+                rospy.logerr("can't lookup tranform marker {} pose".format(str(self.marker_id)))
+                result = False
+            else:
+                marker_trans = self.tfBuffer.lookup_transform('odom', 'fiducial_'+ str(self.marker_id), rospy.Time())
+                marker_pose.header.stamp = rospy.Time.now()
+                marker_pose.pose.position = marker_trans.transform.translation
+                marker_pose.pose.orientation= marker_trans.transform.rotation
+                self.marker_pose_pub.publish(marker_pose)
+                result = True
+
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            rospy.logerr("lookup tranform marker {} pose error".format(str(self.marker_id)))
+            result = False
+        return marker_pose, result
+
+
+
+
     """
      ######     ###    ##       ##       ########     ###     ######  ##    ##
     ##    ##   ## ##   ##       ##       ##     ##   ## ##   ##    ## ##   ##
@@ -196,7 +290,10 @@ class GoToMarker(object):
     """
 
     def execute_cb(self, goal):
-        rospy.logwarn("Start go to marker action!")
+        if not self.node_init_done:
+            rospy.logwarn("Node don't init finish!")
+            return
+        rospy.loginfo("Start go to marker action!")
         self.action_state = "INIT"
         # helper variables
         success = True
@@ -206,7 +303,7 @@ class GoToMarker(object):
             success = False
             # Action Preempted
             self.action_state = "ACTION_PREEMPTED"
-        # Read goal data
+        # Read parameter
         # data = json.loads(goal.data)
         # self.marker_id = int(data["marker_id"])
         # self.x_offset = int(data["x_offset"])
@@ -214,60 +311,112 @@ class GoToMarker(object):
         # self.yaw_offset = int(data["yaw_offset"])
         self.marker_id = int(goal.data)
 
-        rospy.loginfo("Goal marker ID: {}".format(self.marker_id))
-        try:
-            # Broadcaster goal pose
-            marker_trans = TransformStamped()
-            if not self.tfBuffer.can_transform('odom', 'fiducial_'+ str(self.marker_id), rospy.Time(), rospy.Duration(5.0)):
-                rospy.logerr("lookup tranform goal marker {} pose error".format(str(self.marker_id)))
-                rospy.loginfo("%s: Preempted" % self._action_name)
-                self._as.set_preempted()
-                success = False
-                return
-            else:
-                marker_trans = self.tfBuffer.lookup_transform('odom', 'fiducial_'+ str(self.marker_id), rospy.Time())
-                marker_pose = PoseStamped()
-                marker_pose.header.stamp = rospy.Time.now()
-                marker_pose.pose.position = marker_trans.transform.translation
-                marker_pose.pose.orientation = marker_trans.transform.rotation
-                self.marker_pose_pub.publish(marker_pose)
-                self.pub_tf_goal('fiducial_'+ str(self.marker_id))
+        # Load file config
+        goto_marker_cfg_file = os.path.join(self.config_path, "marker_config.json")
+        with open(goto_marker_cfg_file) as j:
+                path_dict = json.load(j)
+                # print_debug("Go to marker path:\n{}".format(json.dumps(path_dict, indent=2)))
+                # offset_x_from_detected = path_dict["marker_params"]["offset_x_from_detected"]
+                # offset_y_from_detected = path_dict["marker_params"]["offset_y_from_detected"]
+                # offset_yaw_from_detected = path_dict["marker_params"]["offset_yaw_from_detected"]
+                angle_robot_vs_detected = path_dict["marker_params"]["angle_robot_vs_detected"]
+                detected_distance_allow = path_dict["marker_params"]["detected_distance_allow"]
+                detected_angle_allow = path_dict["marker_params"]["detected_angle_allow"]
 
-            # Get goal pose with odom frame
-            goal_trans = TransformStamped()
-            if self.tfBuffer.can_transform('odom', 'goal_marker_'+ str(self.marker_id), rospy.Time(), rospy.Duration(5.0)):
-                goal_trans = self.tfBuffer.lookup_transform('odom', 'goal_marker_'+ str(self.marker_id), rospy.Time())
-            # rospy.loginfo(type(trans))
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            rospy.logerr("lookup tranform goal marker {} pose error".format(str(self.marker_id)))
+        rospy.loginfo("Goal marker ID: {}".format(self.marker_id))
+        # Enable aruco detect
+        if not self.aruco_enable:
+            set_result = self.aruco_detect_en(True)
+            rospy.loginfo("Aruco detect enable result: {}".format(str(set_result.success)))
+            self.aruco_enable = True
+        # Get marker pose:
+
+        marker_cnt = 0
+        get_marker_cnt_total = 0
+        filtered_cnt = 0
+        dock_pose_filtered = PoseStamped()
+        self.last_marker_receive = rospy.get_time()
+        r = rospy.Rate(5)
+        while not rospy.is_shutdown():
+            print("Keyboard", KeyboardInterrupt)
+            # Get marker use tf listen
+            marker_pose, get_marker_result = self.get_marker_pose(self.marker_id)
+            # If get marker success
+            if get_marker_result:
+                (dock_pose_filtered, filtered_cnt) = self.pose_filter(dock_pose_filtered, marker_pose,
+                                            filtered_cnt, detected_distance_allow)
+            # Increase marker counter
+            marker_cnt += 1
+            get_marker_cnt_total += 1
+
+            # Nếu check liên tiếp vài lần mà không được lần nào
+            if marker_cnt > self.marker_cnt_target:
+                rospy.logerr('Not detected Marker')
+                # Đặt lại tham số
+                marker_cnt = 0
+                dock_pose_filtered = PoseStamped()
+                filtered_cnt = 0
+                self.last_marker_receive = rospy.get_time()
+                continue
+            # Nếu số lần check marker lặp lại nhiều hơn số lần tối đa cho phép
+            if get_marker_cnt_total >= self.max_marker_check:
+                rospy.logerr('Marker error too much')
+                break
+            rospy.loginfo("Check Marker: %i/%i"%(filtered_cnt, marker_cnt))
+
+            # Check đủ số lần nhưng không vượt quá số lần tối đa
+            if (marker_cnt >= self.marker_cnt_target and filtered_cnt >= self.marker_success_target):
+                rospy.loginfo('Detected Marker')
+                # Disable aruco detect service
+                set_result = self.aruco_detect_en(False)
+                rospy.loginfo("Aruco detect disable result: {}".format(str(set_result.success)))
+                self.aruco_enable = False
+                self.get_marker_pose_result = True
+                break
+
+            # Check time out for find marker stage
+            if rospy.get_time() - self.last_marker_receive > 15.0:
+                rospy.logerr('Get marker timeout')
+                break
+            r.sleep()
+
+        # Disable aruco detect service
+        set_result = self.aruco_detect_en(False)
+        rospy.loginfo("Aruco detect disable result: {}".format(str(set_result.success)))
+        self.aruco_enable = False
+        # If get marker pose success
+        if self.get_marker_pose_result:
+            # Get goal pose
+            self.marker_pose.pose = dock_pose_filtered.pose
+            self.marker_goal_pose.pose = self.get_goal_from_marker( self.marker_pose.pose )
+            print("Marker pose: \n {}".format(self.marker_pose.pose))
+            print("Marker Goal pose: \n {}".format(self.marker_goal_pose.pose))
+
+
+            # publish marker and goal pose
+            self.marker_pose.header.stamp = rospy.Time.now()
+            self.marker_pose_pub.publish(self.marker_pose)
+
+            self.marker_goal_pose.header.stamp = rospy.Time.now()
+            self.marker_goal_pose_pub.publish(self.marker_goal_pose)
+
+            # send goal to move to point action
+            goal = MoveToPointGoal()
+            goal.target_pose.header.stamp = rospy.Time.now()
+            goal.target_pose.header.frame_id = self.base_frame
+            goal.target_pose.pose = self.marker_goal_pose.pose
+            self.go_to_point_client.send_goal(goal)
+
+            # Waits for the server to finish performing the action.
+            self.go_to_point_client.wait_for_result()
+            # Prints out the result of executing the action
+            result = self.go_to_point_client.get_result()
+            print("Action move complete! {}".format(result))
+            success = True
+        else:
             rospy.loginfo("%s: Preempted" % self._action_name)
             self._as.set_preempted()
             success = False
-            return
-
-        rospy.loginfo("Get goal with odom done")
-
-        # send goal
-        goal = MoveToPointGoal()
-        goal.target_pose.header.stamp = rospy.Time.now()
-        goal.target_pose.header.frame_id = "odom"
-        goal.target_pose.pose.position = goal_trans.transform.translation
-        goal.target_pose.pose.orientation = goal_trans.transform.rotation
-
-        # publish marker goal pose
-        marker_goal_pose = PoseStamped()
-        marker_goal_pose.header.stamp = rospy.Time.now()
-        marker_goal_pose.pose.position = goal.target_pose.pose
-        self.marker_pose_pub.publish(marker_goal_pose)
-
-        print(goal)
-        self.go_to_point_client.send_goal(goal)
-
-        # Waits for the server to finish performing the action.
-        self.go_to_point_client.wait_for_result()
-        # Prints out the result of executing the action
-        result = self.go_to_point_client.get_result()
-        print("Action move complete! {}".format(result))
 
         #   check that preempt has not been requested by the client
         if success:
@@ -289,13 +438,14 @@ class GoToMarker(object):
     def loop(self):
         r = rospy.Rate(1.0)
         while not rospy.is_shutdown():
-            # Check pickup food led publish status
-            try:
-                if self.tfBuffer.can_transform('map', 'aruco_test_1', rospy.Time(), rospy.Duration(3.0)):
-                    trans = self.tfBuffer.lookup_transform('map', 'aruco_test_1', rospy.Time())
-                # rospy.loginfo(type(trans))
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                rospy.logerr("lookup tranform error")
+            # publish marker goal pose
+            if self.get_marker_pose_result:
+                # publish marker and goal pose
+                self.marker_goal_pose.header.stamp = rospy.Time.now()
+                self.marker_goal_pose_pub.publish(self.marker_goal_pose)
+
+                self.marker_pose.header.stamp = rospy.Time.now()
+                self.marker_pose_pub.publish(self.marker_pose)
 
             r.sleep()
 
@@ -306,8 +456,8 @@ def parse_opts():
                     action="store_true", dest="simulation", default=False, help="type \"-s\" if simulation")
     parser.add_option("-d", "--ros_debug",
                     action="store_true", dest="log_debug", default=False, help="log_level=rospy.DEBUG")
-    parser.add_option("-c", "--config_file", dest="config_file",
-                    default=os.path.join(rospkg.RosPack().get_path('go_to_marker'), 'cfg', 'moving_param.yaml'))
+    parser.add_option("-c", "--config_path", dest="config_path",
+                    default=os.path.join(rospkg.RosPack().get_path('go_to_marker'), 'cfg'))
 
     (options, args) = parser.parse_args()
     print("Options:\n{}".format(options))

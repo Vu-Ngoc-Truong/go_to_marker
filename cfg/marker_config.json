@@ -1,0 +1,10 @@
+{
+  "name": "Parameter for aruco marker",
+  "marker_params": {
+    "detected_angle_allow": 0.3,
+    "detected_distance_allow": 3.0,
+    "angle_robot_vs_detected": 0.0,
+    "safety_job": "amr_docking",
+    "footprint": "amr_run_alone"
+  }
+}
