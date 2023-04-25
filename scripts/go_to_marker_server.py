@@ -110,9 +110,9 @@ class GoToMarker(object):
         self.yaw_offset = 3.14
         self.base_frame = "odom"
 
-        self.marker_cnt_target = 5
-        self.marker_success_target = 3
-        self.max_marker_check = 20
+        self.marker_cnt_target = 10
+        self.marker_success_target = 5
+        self.max_marker_check = 30
 
         self.tfBuffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
@@ -148,11 +148,17 @@ class GoToMarker(object):
     ##       ##     ## ##   ### ##    ##    ##     ##  ##     ## ##   ###
     ##        #######  ##    ##  ######     ##    ####  #######  ##    ##
     """
-    def get_goal_from_marker(self, marker_pose):
-        """Creat goal pose from marker pose
+    def get_goal_from_marker(self, marker_pose, x_offset, y_offset, yaw_offset):
+        """"Creat goal pose from marker pose
 
         Args:
-            marker_pose (pose): Pose of marker
+            marker_pose (pose)  : Pose of marker
+            x_offset (int )    : Offset with X axis of goal with marker by met
+            y_offset (int)   : Offset with Y axis of goal with marker by met
+            yaw_offset (int) : Offset with Yaw angle of goal with marker by radian
+
+        Returns:
+            pose: Pose of goal
         """
         if self.code_only:
             marker_pose = Pose()
@@ -245,6 +251,7 @@ class GoToMarker(object):
             pose_fiterred.pose.orientation.z = (pose_fiterred.pose.orientation.z * cnt + new_pose.pose.orientation.z)/(cnt + 1)
             pose_fiterred.pose.orientation.w = (pose_fiterred.pose.orientation.w * cnt + new_pose.pose.orientation.w)/(cnt + 1)
             pose_fiterred.header.stamp = rospy.Time.now() # TOCHECK: set stamp to fix transformPose error
+            print("pose filter {} : {}".format(cnt, pose_fiterred.pose.position.x))
             return pose_fiterred, cnt+1
         else:
             rospy.logwarn("dock_pose detected exceed error threshold (dx: %0.3f, dy: %0.3f, dyaw: %0.3f, cnt: %i)"%(dx, dy, dyaw, cnt))
@@ -370,9 +377,9 @@ class GoToMarker(object):
         filtered_cnt = 0
         dock_pose_filtered = PoseStamped()
         self.last_marker_receive = rospy.get_time()
-        r = rospy.Rate(5)
+        r = rospy.Rate(15)
         while not rospy.is_shutdown():
-            print("Keyboard", KeyboardInterrupt)
+            # print("Keyboard", KeyboardInterrupt)
             # Get marker use tf listen
             marker_pose, get_marker_result = self.get_marker_pose(self.marker_id)
             # If get marker success
@@ -422,7 +429,7 @@ class GoToMarker(object):
         if self.get_marker_pose_result:
             # Get goal pose
             self.marker_pose.pose = dock_pose_filtered.pose
-            self.marker_goal_pose.pose = self.get_goal_from_marker( self.marker_pose.pose )
+            self.marker_goal_pose.pose = self.get_goal_from_marker( self.marker_pose.pose, self.x_offset, self.y_offset, self.yaw_offset )
             print("Marker pose: \n {}".format(self.marker_pose.pose))
             print("Marker Goal pose: \n {}".format(self.marker_goal_pose.pose))
             # publish tf for marker pose and marker goal pose
@@ -449,6 +456,26 @@ class GoToMarker(object):
             # Prints out the result of executing the action
             result = self.go_to_point_client.get_result()
             print("Action move complete! {}".format(result))
+
+            # ################################################
+            # rospy.sleep(5)
+            # # Lui lai
+            # # send goal to move to point action
+            # goal = MoveToPointGoal()
+            # goal.target_pose.header.stamp = rospy.Time.now()
+            # goal.target_pose.header.frame_id = self.base_frame
+            # goal.target_pose.pose = Pose()
+            # goal.target_pose.pose.position.x = -1.2
+            # goal.target_pose.pose.orientation.w = 1
+            # self.go_to_point_client.send_goal(goal)
+
+            # # Waits for the server to finish performing the action.
+            # self.go_to_point_client.wait_for_result()
+            # # Prints out the result of executing the action
+            # result = self.go_to_point_client.get_result()
+            # print("Action move complete! {}".format(result))
+
+            #################
             success = True
         else:
             rospy.loginfo("%s: Preempted" % self._action_name)
