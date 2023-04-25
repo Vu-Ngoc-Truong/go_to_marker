@@ -23,7 +23,7 @@ class GoToMarkerClient():
         client.wait_for_server()
         # Creates a goal to send to the action server.
         goal = StringGoal()
-        goal.data = 100
+        goal.data = "100"
 
         # Sends the goal to the action server.
         client.send_goal(goal)

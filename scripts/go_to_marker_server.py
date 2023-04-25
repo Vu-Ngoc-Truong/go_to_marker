@@ -23,6 +23,8 @@ from std_stamped_msgs.msg import StringStamped, StringAction, StringFeedback, St
 from std_stamped_msgs.srv import StringService, StringServiceResponse
 from std_srvs.srv import SetBool
 from fiducial_msgs.msg import FiducialTransformArray, FiducialTransform
+from safety_msgs.msg import SafetyStatus
+
 common_func_dir = os.path.join(rospkg.RosPack().get_path('agv_common_library'), 'scripts')
 if not os.path.isdir(common_func_dir):
     common_func_dir = os.path.join(rospkg.RosPack().get_path('agv_common_library'), 'release')
@@ -45,7 +47,7 @@ import tf2_ros
 from move_to_point.msg import MoveToPointAction, MoveToPointResult, MoveToPointGoal
 
 class GoToMarker(object):
-    CODE_ONLY = False
+    code_only = False
     # create messages that are used to publish feedback/result
     _feedback = StringFeedback()
     _result = StringResult()
@@ -70,9 +72,11 @@ class GoToMarker(object):
         self.marker_goal_pose_pub = rospy.Publisher("/marker_goal_pose", PoseStamped, queue_size=5)
         # Subscriber
         # rospy.Subscriber("/led_status", StringStamped, self.led_status_cb)
+        rospy.Subscriber('/safety_status', SafetyStatus, self.safety_status_cb)
 
         # Service
         self.aruco_detect_en = rospy.ServiceProxy('/enable_detections', SetBool)
+        self.dynamic_client = dynamic_reconfigure.client.Client("move_to_point", timeout=30)
 
         rospy.on_shutdown(self.shutdown)
 
@@ -101,9 +105,9 @@ class GoToMarker(object):
 
         # General variable
         self.marker_id = 100
-        self.x_offset = 1
-        self.y_offset = 0.5
-        self.yaw_offset = 0
+        self.x_offset = 0.8
+        self.y_offset = 0.0
+        self.yaw_offset = 3.14
         self.base_frame = "odom"
 
         self.marker_cnt_target = 5
@@ -122,6 +126,8 @@ class GoToMarker(object):
 
 
         # Disable Aruco detect
+        rospy.loginfo("Waiting aruco detect service active...")
+        rospy.wait_for_service('/enable_detections')
         set_result = self.aruco_detect_en(False)
         rospy.loginfo("Aruco detect disable result: {}".format(str(set_result.success)))
         self.aruco_enable = False
@@ -148,37 +154,39 @@ class GoToMarker(object):
         Args:
             marker_pose (pose): Pose of marker
         """
-        if self.CODE_ONLY:
+        if self.code_only:
             marker_pose = Pose()
         goal_pose = Pose()
 
         # Get matrix of marker to odom
         _transMarker2Odom = np.array(
-            [marker_pose.position.x, marker_pose.position.y, marker_pose.position.z])
-        _rotMarker2Odom = np.array([marker_pose.orientation.x, marker_pose.orientation.y,
+            [marker_pose.position.x, marker_pose.position.y, 0])
+        (roll, pitch, yaw) = euler_from_quaternion([marker_pose.orientation.x, marker_pose.orientation.y,
                                     marker_pose.orientation.z, marker_pose.orientation.w])
+
+        _rotMarker2Odom = np.array(quaternion_from_euler(1.57, 0, yaw))
         _matrixMarker2Odom = concatenate_matrices(translation_matrix(
             _transMarker2Odom), quaternion_matrix(_rotMarker2Odom))
-        print( "Matrix Marker to Odom:")
-        print(_matrixMarker2Odom)
+        # print( "Matrix Marker to Odom:")
+        # print(_matrixMarker2Odom)
         # Get matrix of goal to marker
         _transGoal2Marker = np.array([self.y_offset, 0, self.x_offset])
         q_transform = quaternion_from_euler(-1.57, self.yaw_offset-1.57, 0)
-        print("q_transform")
-        print(q_transform)
+        # print("q_transform")
+        # print(q_transform)
         _rotGoal2Marker = np.array([q_transform[0], q_transform[1],
                                     q_transform[2], q_transform[3]])
         _matrixGoal2Marker = concatenate_matrices(translation_matrix(
             _transGoal2Marker), quaternion_matrix(_rotGoal2Marker))
-        print( "translation_matrix:")
-        print(translation_matrix(_transGoal2Marker))
-        print( "quaternion_matrix")
-        print(quaternion_matrix(_rotGoal2Marker))
-        print( "Matrix Goal to Marker:")
-        print(_matrixGoal2Marker)
+        # print( "translation_matrix:")
+        # print(translation_matrix(_transGoal2Marker))
+        # print( "quaternion_matrix")
+        # print(quaternion_matrix(_rotGoal2Marker))
+        # print( "Matrix Goal to Marker:")
+        # print(_matrixGoal2Marker)
         # Get matrix of goal to odom
         _matrixGoal2Odom = np.matmul(_matrixMarker2Odom, _matrixGoal2Marker)
-        print("matrix goal to odom \n",_matrixGoal2Odom)
+        # print("matrix goal to odom \n",_matrixGoal2Odom)
         # Get pose from matrix
         goal_pose.position.x   = translation_from_matrix(_matrixGoal2Odom)[0]
         goal_pose.position.y   = translation_from_matrix(_matrixGoal2Odom)[1]
@@ -204,7 +212,7 @@ class GoToMarker(object):
             (pose_filtered, cnt)
         """
         # Type of variable
-        if self.CODE_ONLY:
+        if self.code_only:
             pose_fiterred = PoseStamped()
             new_pose = PoseStamped()
 
@@ -276,7 +284,20 @@ class GoToMarker(object):
             result = False
         return marker_pose, result
 
+    def tf2_broadcaster(self, pose, parent, child):
+        if self.code_only:
+            pose = Pose()
+        br = tf2_ros.TransformBroadcaster()
+        t = TransformStamped()
 
+        t.header.stamp = rospy.Time.now()
+        t.header.frame_id = parent
+        t.child_frame_id = child
+
+        t.transform.translation = pose.position
+        t.transform.rotation = pose.orientation
+
+        br.sendTransform(t)
 
 
     """
@@ -287,6 +308,19 @@ class GoToMarker(object):
     ##       ######### ##       ##       ##     ## ######### ##       ##  ##
     ##    ## ##     ## ##       ##       ##     ## ##     ## ##    ## ##   ##
      ######  ##     ## ######## ######## ########  ##     ##  ######  ##    ##
+    """
+    def safety_status_cb(self, msg):
+        if self.code_only:
+            msg = SafetyStatus()
+
+    """
+    .########.##.....##.########..######..##.....##.########.########
+    .##........##...##..##.......##....##.##.....##....##....##......
+    .##.........##.##...##.......##.......##.....##....##....##......
+    .######......###....######...##.......##.....##....##....######..
+    .##.........##.##...##.......##.......##.....##....##....##......
+    .##........##...##..##.......##....##.##.....##....##....##......
+    .########.##.....##.########..######...#######.....##....########
     """
 
     def execute_cb(self, goal):
@@ -391,6 +425,9 @@ class GoToMarker(object):
             self.marker_goal_pose.pose = self.get_goal_from_marker( self.marker_pose.pose )
             print("Marker pose: \n {}".format(self.marker_pose.pose))
             print("Marker Goal pose: \n {}".format(self.marker_goal_pose.pose))
+            # publish tf for marker pose and marker goal pose
+            self.tf2_broadcaster(self.marker_pose.pose, "odom", "marker_pose")
+            self.tf2_broadcaster(self.marker_goal_pose.pose, "odom", "marker_goal_pose")
 
 
             # publish marker and goal pose
@@ -401,11 +438,11 @@ class GoToMarker(object):
             self.marker_goal_pose_pub.publish(self.marker_goal_pose)
 
             # send goal to move to point action
-            goal = MoveToPointGoal()
-            goal.target_pose.header.stamp = rospy.Time.now()
-            goal.target_pose.header.frame_id = self.base_frame
-            goal.target_pose.pose = self.marker_goal_pose.pose
-            self.go_to_point_client.send_goal(goal)
+            mtp_goal = MoveToPointGoal()
+            mtp_goal.target_pose.header.stamp = rospy.Time.now()
+            mtp_goal.target_pose.header.frame_id = self.base_frame
+            mtp_goal.target_pose.pose = self.marker_goal_pose.pose
+            self.go_to_point_client.send_goal(mtp_goal)
 
             # Waits for the server to finish performing the action.
             self.go_to_point_client.wait_for_result()
